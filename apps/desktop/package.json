@@ -1,0 +1,14 @@
+{
+  "name": "bigswarm-desktop",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "tsx --test tests/workspace.test.ts tests/objectives.test.ts",
+    "start": "tsx src/cli.ts",
+    "window": "electron electron/main.mjs"
+  },
+  "devDependencies": {
+    "electron": "33.4.11",
+    "tsx": "4.20.6"
+  }
+}

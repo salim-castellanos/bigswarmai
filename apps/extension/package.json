@@ -1,0 +1,71 @@
+{
+  "name": "bigswarmai",
+  "displayName": "BigSwarmAI",
+  "description": "Run an agent swarm on an objective in the open folder, using the models VS Code already has.",
+  "version": "0.1.22",
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "publisher": "SalimCastellanos",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/salim-castellanos/bigswarmai.git"
+  },
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "bigswarm",
+          "title": "BigSwarmAI",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "bigswarm": [
+        {
+          "type": "webview",
+          "id": "bigswarm.panel",
+          "name": "Objectives"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "bigswarm.openConnection",
+        "title": "BigSwarmAI: Connection"
+      },
+      {
+        "command": "bigswarm.openAssistant",
+        "title": "BigSwarmAI: Add objective"
+      },
+      {
+        "command": "bigswarm.showFindings",
+        "title": "BigSwarmAI: Discoveries",
+        "icon": "$(lightbulb)"
+      },
+      {
+        "command": "bigswarm.showLog",
+        "title": "BigSwarmAI: Log",
+        "icon": "$(output)"
+      },
+      {
+        "command": "bigswarm.showResult",
+        "title": "BigSwarmAI: Result",
+        "icon": "$(pass)"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --sourcemap"
+  },
+  "devDependencies": {
+    "@types/vscode": "1.95.0",
+    "esbuild": "0.25.0"
+  }
+}
