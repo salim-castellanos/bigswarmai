@@ -11,6 +11,7 @@ import {
   readObjectives,
   updateObjective,
   writeRunResult,
+  writeVisibleReport,
   latestRun,
   objectiveHasResult,
   appendLog,
@@ -83,6 +84,9 @@ test("la corrida queda en un archivo del objetivo", () => {
   updateObjective(root, child.id, { text: "reunir otras fuentes" });
   const changed = readObjectives(root).find((item) => item.id === child.id);
   assert.equal(resultIsStale(root, changed ?? child), true);
+  const report = writeVisibleReport(root, latestRun(root, child.id)!);
+  assert.ok(report.startsWith("research/"));
+  assert.equal(fs.existsSync(path.join(root, report)), true);
 });
 
 test("la bitácora queda en la carpeta", () => {

@@ -10,18 +10,21 @@ import {
   readObjectives,
   updateObjective,
   writeRunResult,
+  writeVisibleReport,
   objectiveHasResult,
   latestRun,
   listRuns,
   timelineInstant,
   readLog,
   appendLog,
+  appendError,
   resultIsStale,
   WorkspaceError,
   type Discovery,
   type ListedModel,
   type ObjectiveNode,
 } from "../../desktop/src/workspace.ts";
+import { HARNESS_ID, HARNESS_VERSION, investigate, sourceIsGrounded } from "./investigate.ts";
 
 const ORCH = "bigswarm.orchestratorModelId";
 const AGENT = "bigswarm.agentModelId";
@@ -49,6 +52,16 @@ type FeedLine = { t: number; at: string; who: string; text: string };
 const feed: FeedLine[] = [];
 const doing: Record<string, string> = {};
 let runControl: { token: vscode.CancellationTokenSource; stopped: boolean } | null = null;
+let chargeCall: ((objectiveId: string) => void) | null = null;
+const callsSpent: Record<string, number> = {};
+const DEFAULT_CALLS = 100;
+
+class NodeBudget extends Error {
+  constructor() {
+    super("Node budget");
+    this.name = "NodeBudget";
+  }
+}
 
 class RunStopped extends Error {
   constructor() {
@@ -78,6 +91,21 @@ function trace(who: string, text: string): void {
     }
   }
   for (const view of sideViews) view.refresh();
+}
+
+function reportProblem(where: string, error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  const t = Date.now();
+  const line = { t, at: stamp(t), where, message: message.slice(0, 500) };
+  const root = rootPath();
+  if (root && isInitialized(root)) {
+    try {
+      appendError(root, line);
+    } catch {
+      /* the bitácora still gets the line */
+    }
+  }
+  trace(where, `error: ${line.message}. See .bigswarm/errors.json`);
 }
 
 function loadFeed(): void {
@@ -187,7 +215,7 @@ class PanelProvider implements vscode.WebviewViewProvider {
     findingsTab.update(this.context);
   }
 
-  private async onMessage(message: { type: string; source?: string; id?: string; strategyId?: string; agentCount?: number; again?: boolean }): Promise<void> {
+  private async onMessage(message: { type: string; source?: string; id?: string; strategyId?: string; agentCount?: number; callBudget?: number; again?: boolean }): Promise<void> {
     const root = rootPath();
     try {
       if (message.type === "stop") {
@@ -248,19 +276,44 @@ class PanelProvider implements vscode.WebviewViewProvider {
         }
         return;
       }
+      if (message.type === "explain" && root) {
+        if (!isInitialized(root)) openWorkspace(root);
+        const created = addObjective(
+          root,
+          "Explain what this folder contains. Read the files here and cite the path of each finding.",
+          null,
+        );
+        if (!isReady(this.context)) {
+          this.refresh("Objective ready. Connect a model, select it, and press Start.");
+          return;
+        }
+        await startNode(this.context, this, root, created.id, created.strategyId, created.agentCount, false, DEFAULT_CALLS);
+        return;
+      }
       if (message.type === "saveNode" && root && message.id) {
         updateObjective(root, message.id, {
           strategyId: message.strategyId,
           agentCount: Number(message.agentCount),
+          callBudget: Number(message.callBudget),
         });
         this.refresh("Node saved.");
         return;
       }
       if (message.type === "start" && root && message.id) {
-        await startNode(this.context, this, root, message.id, message.strategyId, Number(message.agentCount), Boolean(message.again));
+        await startNode(
+          this.context,
+          this,
+          root,
+          message.id,
+          message.strategyId,
+          Number(message.agentCount),
+          Boolean(message.again),
+          Number(message.callBudget) || DEFAULT_CALLS,
+        );
       }
     } catch (error) {
-      this.refresh(error instanceof WorkspaceError ? error.message : "Could not write the folder.");
+      reportProblem("Panel", error);
+      this.refresh(error instanceof WorkspaceError ? error.message : "Could not write the folder. See .bigswarm/errors.json");
     }
   }
 }
@@ -288,6 +341,8 @@ function panelHtml(state: State): string {
     text: node.text,
     strategyId: node.strategyId,
     agentCount: node.agentCount,
+    callBudget: node.callBudget ?? DEFAULT_CALLS,
+    spent: callsSpent[node.id] ?? 0,
     t: timelineInstant(node),
     done: state.folder ? objectiveHasResult(state.folder, node.id) : false,
     stale: state.folder ? resultIsStale(state.folder, node) : false,
@@ -312,7 +367,7 @@ function panelHtml(state: State): string {
           : `<span class="twist"></span>`;
         const mark = node.stale ? " stale" : node.done ? " done" : "";
         const markTitle = node.stale ? "Objective changed since this result" : node.done ? "Has a result" : "No result yet";
-        return `<li data-node="${escapeHtml(node.id)}"><div class="row" role="treeitem" tabindex="0" data-id="${escapeHtml(node.id)}" title="${escapeHtml(node.text)}">${twist}<span class="label">${escapeHtml(node.text)}</span><span class="mark${mark}" title="${markTitle}"></span></div>${children.length ? `<div class="kids">${branch(node.id)}</div>` : ""}</li>`;
+        return `<li data-node="${escapeHtml(node.id)}"><div class="row" role="treeitem" tabindex="0" data-id="${escapeHtml(node.id)}" title="${escapeHtml(node.text)}">${twist}<span class="label">${escapeHtml(node.text)}</span><span class="spent" title="Calls used / calls allowed">${node.spent}/${node.callBudget}</span><span class="mark${mark}" title="${markTitle}"></span></div>${children.length ? `<div class="kids">${branch(node.id)}</div>` : ""}</li>`;
       })
       .join("")}</ul>`;
   };
@@ -341,6 +396,7 @@ function panelHtml(state: State): string {
   span.twist { width: 14px; height: 14px; flex: 0 0 14px; }
   button.twist { width: 14px; height: 14px; margin-top: 2px; flex: 0 0 14px; padding: 0; border: 1px solid var(--vscode-tree-indentGuidesStroke, rgba(128,128,128,.8)); border-radius: 2px; background: transparent; color: inherit; font-family: var(--vscode-editor-font-family, Consolas, monospace); font-size: 12px; line-height: 12px; }
   .label { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .spent { flex: 0 0 auto; margin-top: 2px; font-size: 10px; font-variant-numeric: tabular-nums; opacity: 0.8; }
   .mark { width: 6px; height: 6px; border-radius: 50%; margin-top: 6px; flex: 0 0 6px; background: var(--vscode-disabledForeground); opacity: 0.45; }
   .opens { display: flex; gap: 4px; min-width: 0; }
   .opens button { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; font-size: 11px; line-height: 1.15; padding: 6px 2px; text-align: center; }
@@ -357,7 +413,7 @@ function panelHtml(state: State): string {
 </style></head><body>
   ${state.message ? `<p class="banner">${escapeHtml(state.message)}</p>` : ""}
   ${ready ? `<div class="toolbar"><span class="status"><span class="dot${state.ready ? "" : " warn"}"></span>${state.ready ? "Ready" : "No model"}</span><span class="spacer"></span>${runControl ? `<button type="button" id="stop">Stop</button>` : ""}<button type="button" id="connect">Connect</button><button type="button" id="add" class="primary">+ Objective</button></div><div class="opens" role="group" aria-label="Open a panel"><button type="button" id="findings"><svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 1.2a4.2 4.2 0 0 0-2.1 7.8c.3.2.4.5.4.8v.7h3.4v-.7c0-.3.1-.6.4-.8A4.2 4.2 0 0 0 8 1.2zM6.4 12h3.2v.6a1.6 1.6 0 0 1-3.2 0V12z"/></svg><span>Discoveries</span></button><button type="button" id="now"><svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M2 3h12v1.4H2V3zm0 4.3h12v1.4H2V7.3zM2 11.6h8v1.4H2v-1.4z"/></svg><span>Log</span></button><button type="button" id="result"><svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M6.4 11.2 3.2 8l1-1 2.2 2.2 5.4-5.4 1 1z"/></svg><span>Result</span></button></div>` : ""}
-  <div class="scroll tree">${tree || (state.folder && state.initialized ? `<p class="hint">No objectives yet.</p>` : "")}${state.folder && !state.initialized ? `<button type="button" id="init" class="primary">Initialize folder</button>` : ""}</div>
+  <div class="scroll tree">${tree || (state.folder && state.initialized ? `<p class="hint">No objectives yet.</p><button type="button" id="explain" class="primary">Explain this folder</button>` : "")}${state.folder && !state.initialized ? `<button type="button" id="init" class="primary">Initialize folder</button>` : ""}</div>
   ${ready ? `<div class="inspector" id="inspector"></div>` : ""}
   <script>
     const vscode = acquireVsCodeApi();
@@ -412,7 +468,12 @@ function panelHtml(state: State): string {
       agents.type = "number";
       agents.min = "1";
       agents.value = String(node.agentCount);
-      for (const [name, input] of [["Strategy", strategy], ["Agents", agents]]) {
+      const calls = document.createElement("input");
+      calls.type = "number";
+      calls.min = "1";
+      calls.value = String(node.callBudget || ${DEFAULT_CALLS});
+      calls.title = "Stop after this many model calls.";
+      for (const [name, input] of [["Strategy", strategy], ["Agents", agents], ["Calls", calls]]) {
         const label = document.createElement("label");
         label.append(name, input);
         fields.append(label);
@@ -427,10 +488,11 @@ function panelHtml(state: State): string {
       actions.append(start, edit, child, drop);
       if (repeat) actions.append(repeat);
       box.append(fields, actions);
-      const payload = (runAgain) => ({ id: node.id, strategyId: strategy.value, agentCount: Number(agents.value), again: runAgain });
-      const persist = () => vscode.postMessage({ type: "saveNode", id: node.id, strategyId: strategy.value, agentCount: Number(agents.value) });
+      const payload = (runAgain) => ({ id: node.id, strategyId: strategy.value, agentCount: Number(agents.value), callBudget: Number(calls.value), again: runAgain });
+      const persist = () => vscode.postMessage({ type: "saveNode", id: node.id, strategyId: strategy.value, agentCount: Number(agents.value), callBudget: Number(calls.value) });
       strategy.addEventListener("change", persist);
       agents.addEventListener("change", persist);
+      calls.addEventListener("change", persist);
       start.onclick = () => vscode.postMessage({ type: "start", ...payload(false) });
       if (repeat) repeat.onclick = () => vscode.postMessage({ type: "start", ...payload(true) });
       edit.onclick = () => vscode.postMessage({ type: "edit", id: node.id });
@@ -441,6 +503,7 @@ function panelHtml(state: State): string {
     document.getElementById("stop")?.addEventListener("click", () => vscode.postMessage({ type: "stop" }));
     document.getElementById("connect")?.addEventListener("click", () => vscode.postMessage({ type: "connect" }));
     document.getElementById("add")?.addEventListener("click", () => vscode.postMessage({ type: "assistant" }));
+    document.getElementById("explain")?.addEventListener("click", () => vscode.postMessage({ type: "explain" }));
     document.getElementById("findings")?.addEventListener("click", () => vscode.postMessage({ type: "showFindings" }));
     document.getElementById("now")?.addEventListener("click", () => vscode.postMessage({ type: "showNow" }));
     document.getElementById("result")?.addEventListener("click", () => vscode.postMessage({ type: "showResult" }));
@@ -463,7 +526,8 @@ function panelHtml(state: State): string {
 </body></html>`;
 }
 
-async function askModel(model: vscode.LanguageModelChat, prompt: string): Promise<string> {
+async function askModel(model: vscode.LanguageModelChat, prompt: string, objectiveId: string): Promise<string> {
+  chargeCall?.(objectiveId);
   if (runControl?.stopped) throw new RunStopped();
   const token = runControl?.token ?? new vscode.CancellationTokenSource();
   const owned = !runControl;
@@ -500,6 +564,7 @@ async function startNode(
   strategyId: string | undefined,
   agentCount: number,
   again: boolean,
+  callBudget: number,
 ): Promise<void> {
   const choice = saved(context);
   const ready = isReady(context);
@@ -508,7 +573,11 @@ async function startNode(
     void vscode.window.showWarningMessage("BigSwarmAI: connect a model before starting.");
     return;
   }
-  const node = updateObjective(root, id, { strategyId, agentCount });
+  const node = updateObjective(root, id, {
+    strategyId,
+    agentCount,
+    callBudget: Math.max(1, Math.floor(callBudget) || DEFAULT_CALLS),
+  });
   if (node.strategyId !== "board") {
     panel.refresh("That strategy does not run yet. Keep board.");
     return;
@@ -527,7 +596,33 @@ async function startNode(
     panel.refresh("A run is already going. Use Stop first.");
     return;
   }
+  let stopBudget = Math.max(1, Math.floor(callBudget) || DEFAULT_CALLS);
+  let budgetHit = false;
+  const clearSpent = (nodeId: string) => {
+    callsSpent[nodeId] = 0;
+    for (const child of readObjectives(root).filter((item) => item.parentId === nodeId)) clearSpent(child.id);
+  };
+  clearSpent(id);
   runControl = { token: new vscode.CancellationTokenSource(), stopped: false };
+  chargeCall = (objectiveId: string) => {
+    const cap = Math.max(1, readObjectives(root).find((item) => item.id === objectiveId)?.callBudget ?? DEFAULT_CALLS);
+    const spent = callsSpent[objectiveId] ?? 0;
+    if (spent >= cap) {
+      budgetHit = true;
+      stopBudget = cap;
+      throw new NodeBudget();
+    }
+    callsSpent[objectiveId] = spent + 1;
+    panel.refresh();
+  };
+  const allowedSites = new Set<string>();
+  const approveSite = async (origin: string): Promise<boolean> => {
+    if (allowedSites.has(origin)) return true;
+    const picked = await vscode.window.showWarningMessage(`BigSwarmAI wants to read ${origin}`, { modal: true }, "Allow");
+    if (picked !== "Allow") return false;
+    allowedSites.add(origin);
+    return true;
+  };
   let stopped = false;
   let hold = "";
   try {
@@ -544,13 +639,13 @@ async function startNode(
     panel.refresh(hold);
     return;
   }
-  await runPlanned(node);
+  await runPlanned(node, again);
   resultTab.open(context, true);
   void vscode.window.showInformationMessage("BigSwarmAI: result ready. The Result tab is open.");
 
-  async function runPlanned(current: ObjectiveNode): Promise<boolean> {
+  async function runPlanned(current: ObjectiveNode, force: boolean): Promise<boolean> {
     const children = readObjectives(root).filter((item) => item.parentId === current.id);
-    const pending = children.filter((item) => needsWork(item.id));
+    const pending = force ? children : children.filter((item) => needsWork(item.id));
     let childRan = false;
     if (pending.length) {
       const catalog = pending
@@ -564,12 +659,13 @@ async function startNode(
       const planText = await askModel(
         orchestrator,
         `Vas a ejecutar «${current.text}».
-Estos son solo sus subobjetivos directos que aún no terminan:
+${force ? "Estos subobjetivos hay que volver a correrlos, aunque ya tengan resultado:" : "Estos son solo sus subobjetivos directos que aún no terminan:"}
 ${catalog}
 Decide cuáles necesitas, en qué orden, y cuáles pueden correr a la vez.
 Responde solo JSON: {"waves":[["id-a","id-b"],["id-c"]]}
 Cada lista interna corre en paralelo. La siguiente lista espera a que la anterior termine.
 No inventes ids. No incluyas uno que no esté en la lista.`,
+        current.id,
       );
       const plan = readJsonObject(planText);
       const allowed = new Set(pending.map((item) => item.id));
@@ -585,19 +681,18 @@ No inventes ids. No incluyas uno que no esté en la lista.`,
         panel.refresh(wave.length > 1 ? `Waiting for ${wave.length} sub-objectives in parallel.` : `Waiting for «${names[0]}».`);
         const ran = await Promise.all(wave.map(async (itemId) => {
           const child = children.find((item) => item.id === itemId);
-          if (!child || !needsWork(child.id)) {
+          if (!child || (!force && !needsWork(child.id))) {
             if (child) trace("Orchestrator", `«${child.text}» already has a result. It will not run again.`);
             return false;
           }
-          return runPlanned(child);
+          return runPlanned(child, force);
         }));
         if (ran.some(Boolean)) childRan = true;
       }
     }
     const currentNode = readObjectives(root).find((entry) => entry.id === current.id);
     const stale = currentNode ? resultIsStale(root, currentNode) : false;
-    const forceSelf = again && current.id === id;
-    if (!forceSelf && objectiveHasResult(root, current.id) && !stale && !childRan) {
+    if (!force && objectiveHasResult(root, current.id) && !stale && !childRan) {
       trace("Orchestrator", `«${current.text}» already has a result. It will not run again.`);
       return false;
     }
@@ -606,6 +701,7 @@ No inventes ids. No incluyas uno que no esté en la lista.`,
   }
 
   async function runObjective(node: ObjectiveNode): Promise<void> {
+  activeObjectiveId = node.id;
   const children = readObjectives(root).filter((item) => item.parentId === node.id);
   const readyChildren = children.filter((item) => objectiveHasResult(root, item.id));
   const missingChildren = children.filter((item) => !objectiveHasResult(root, item.id));
@@ -619,7 +715,7 @@ No inventes ids. No incluyas uno que no esté en la lista.`,
       ? `The principal can use the results of: ${readyChildren.map((item) => item.text).join(", ")}.`
       : "This node has no sub-objectives.";
   trace("Orchestrator", note);
-  const known = readEvents(root).map((event) => event.claim).join("\n");
+  let known = readEvents(root).map((event) => event.claim).join("\n");
   trace("Orchestrator", "asks for the split");
   panel.refresh("The orchestrator is assigning work.");
   const planText = await askModel(
@@ -631,7 +727,8 @@ ${note}
 Ya descubierto:
 ${known || "nada"}
 Si un subobjetivo no tiene resultado, no inventes ese dato: el ángulo debe decir que hay que ejecutarlo.
-Reparte el trabajo en ${node.agentCount} ángulos distintos. Responde solo JSON: {"angles":["..."]}`,
+Reparte el trabajo en ${node.agentCount} ángulos distintos. Si el dato no está en la carpeta, el ángulo debe pedir una fuente de internet. Responde solo JSON: {"angles":["..."]}`,
+    node.id,
   );
   const plan = readJsonObject(planText);
   const angles = Array.isArray(plan?.angles) ? plan.angles.map((item) => String(item)).filter(Boolean) : [];
@@ -640,36 +737,60 @@ Reparte el trabajo en ${node.agentCount} ángulos distintos. Responde solo JSON:
   let published = 0;
   const discoveries: { claim: string; why: string; source: string }[] = [];
   const usage: string[] = [];
-  for (let index = 0; index < node.agentCount; index += 1) {
+  await Promise.all(angles.slice(0, node.agentCount).map(async (angle, index) => {
     if (runControl?.stopped) throw new RunStopped();
     const name = `Agent ${index + 1}`;
-    trace(name, angles[index]);
+    trace(name, angle);
     panel.refresh(`${name} de ${node.agentCount}`);
-    const reply = await askModel(
-      agentModel,
-      `Ángulo: ${angles[index]}
-Objetivo: ${node.text}
-Ya descubierto:
-${known || "nada"}
-Si hay un hallazgo que cambiaría lo que otro agente haría, responde solo JSON {"claim":"...","why":"...","source":"modelo"}.
-Si no, responde solo JSON {"skip":true}.`,
-    );
-    usage.push(`${name}: ${reply.length} characters`);
-    const found = readJsonObject(reply);
+    const reply = await investigate({
+      model: agentModel,
+      root,
+      token: runControl.token.token,
+      approve: approveSite,
+      onTool: (tool) => trace(name, tool),
+      onCall: () => chargeCall?.(node.id),
+      onWait: (text) => trace(name, text),
+      onError: (message) => reportProblem(name, new Error(message)),
+      prompt: `Angle: ${angles[index]}
+Objective: ${node.text}
+Already discovered:
+${known || "nothing"}
+Read the workspace. The board shown before each answer includes claims other agents just wrote; do not repeat one word for word. If the files and the board do not contain an outside fact, fetch_url is how you check it. The board itself is not that fact.
+When you have a finding that would change what another agent does, answer with only JSON {"claim":"...","why":"...","source":"..."}.
+source must be one of: objective, board, or a path or url that read_slice or fetch_url returned in this turn.
+objective means you inferred it from the objective or sub-objectives already given to you.
+board means you inferred it from a discovery already written.
+${again ? "This is a fresh pass. Do not skip only because the board already has notes." : "If the board already has this finding word for word, answer with only JSON {\"skip\":true}."}
+Do not invent a file or a page.`,
+    }).catch((error: unknown) => {
+      if (error instanceof NodeBudget) {
+        trace(name, "call budget reached");
+        return { text: "{\"skip\":true}", sources: [] as string[] };
+      }
+      if (runControl?.stopped) throw new RunStopped();
+      throw error;
+    });
+    usage.push(`${name}: ${reply.text.length} characters`);
+    const found = readJsonObject(reply.text);
     if (!found || found.skip || !found.claim || !found.why || !found.source) {
       trace(name, "nothing new to share");
-      continue;
+      return;
     }
     const claim = String(found.claim);
     const why = String(found.why);
     const source = String(found.source);
+    if (!sourceIsGrounded(source, reply.sources)) {
+      trace(name, `the source was not read and is not objective or board: ${source}`);
+      return;
+    }
     addDiscovery(root, { claim, why, source, objectiveId: node.id });
+    known = readEvents(root).map((event) => event.claim).join("\n");
     discoveries.push({ claim, why, source });
     published += 1;
     trace(name, `shared: ${claim}`);
     void vscode.window.showInformationMessage(`BigSwarmAI shared: ${claim}`);
     panel.refresh(`${name} shared a discovery.`);
-  }
+  }));
   const summary = published === 1 ? "1 discovery" : published ? `${published} discoveries` : "no new finding";
   trace("Orchestrator", "writes the final result");
   panel.refresh("Writing the final result.");
@@ -680,8 +801,9 @@ ${note}
 Descubrimientos de esta corrida:
 ${discoveries.map((item) => `- ${item.claim}: ${item.why}`).join("\n") || "ninguno"}
 Escribe el resultado final en uno o dos párrafos. No repitas la lista. Si faltan subobjetivos, dilo al inicio.`,
+    node.id,
   );
-  writeRunResult(root, {
+  const record = writeRunResult(root, {
     objectiveId: node.id,
     objectiveText: node.text,
     parentId: node.parentId,
@@ -689,19 +811,41 @@ Escribe el resultado final en uno o dos párrafos. No repitas la lista. Si falta
     note,
     discoveries,
     conclusion: conclusion.trim(),
+    harnessId: HARNESS_ID,
+    harnessVersion: HARNESS_VERSION,
+    callBudget: node.callBudget ?? DEFAULT_CALLS,
   });
+  const report = writeVisibleReport(root, record);
+  hold = `Report saved: ${report}`;
+  trace("Orchestrator", `wrote ${report}`);
+  try {
+    await vscode.window.showTextDocument(
+      await vscode.workspace.openTextDocument(vscode.Uri.joinPath(vscode.Uri.file(root), ...report.split("/"))),
+    );
+  } catch {
+    /* the report is already on disk */
+  }
   trace(node.text, "result ready");
   trace("Orchestrator", `closed «${node.text}». ${usage.join(". ")}`);
   panel.refresh(`Closed «${node.text}».`);
   }
   } catch (error) {
-    if (!(error instanceof RunStopped)) throw error;
-    stopped = true;
-    trace("Orchestrator", "stopped");
+    if (error instanceof NodeBudget) {
+      budgetHit = true;
+      trace("Orchestrator", `stopped after ${stopBudget} calls`);
+    } else if (error instanceof RunStopped || runControl?.stopped) {
+      stopped = true;
+      trace("Orchestrator", budgetHit ? `stopped after ${stopBudget} calls` : "stopped");
+    } else {
+      const text = error instanceof Error ? error.message : "The run failed.";
+      hold = text;
+      reportProblem("Run", error);
+    }
   } finally {
+    chargeCall = null;
     runControl?.token.dispose();
     runControl = null;
-    panel.refresh(stopped ? "Stopped." : hold);
+    panel.refresh(budgetHit ? `Stopped after ${stopBudget} calls.` : stopped ? "Stopped." : hold);
   }
 }
 
@@ -911,6 +1055,10 @@ class LiveTab {
       this.panel = vscode.window.createWebviewPanel(this.id, this.title, vscode.ViewColumn.Beside, { enableScripts: true });
       this.panel.webview.onDidReceiveMessage(async (message: { type?: string; source?: string }) => {
         if (message.type !== "open" || !message.source) return;
+        if (/^https?:\/\//i.test(message.source)) {
+          await vscode.env.openExternal(vscode.Uri.parse(message.source));
+          return;
+        }
         const root = rootPath();
         if (!root) return;
         try {
@@ -958,7 +1106,8 @@ function discoveriesHtml(state: State): string {
     .map((event) => {
       const owner = state.objectives.find((node) => node.id === event.objectiveId);
       const where = owner ? escapeHtml(owner.text) : "";
-      const file = event.source && event.source !== "modelo" && !event.source.startsWith("model");
+      const key = event.source.trim().toLowerCase();
+      const file = Boolean(event.source) && key !== "objective" && key !== "board" && key !== "modelo" && !key.startsWith("model");
       return `<article class="card"><header><time>${escapeHtml(stamp(timelineInstant(event)))}</time>${where ? `<span>${where}</span>` : ""}</header><p class="claim">${escapeHtml(event.claim)}</p>${file ? `<button type="button" data-source="${escapeHtml(event.source)}">Open source</button>` : ""}</article>`;
     })
     .join("");

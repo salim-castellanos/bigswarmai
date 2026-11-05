@@ -2,7 +2,7 @@
   "name": "bigswarmai",
   "displayName": "BigSwarmAI",
   "description": "Run an agent swarm on an objective in the open folder, using the models VS Code already has.",
-  "version": "0.1.22",
+  "version": "0.1.32",
   "license": "MIT",
   "icon": "media/icon.png",
   "publisher": "SalimCastellanos",
