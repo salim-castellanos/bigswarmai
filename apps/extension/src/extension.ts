@@ -818,13 +818,6 @@ Escribe el resultado final en uno o dos párrafos. No repitas la lista. Si falta
   const report = writeVisibleReport(root, record);
   hold = `Report saved: ${report}`;
   trace("Orchestrator", `wrote ${report}`);
-  try {
-    await vscode.window.showTextDocument(
-      await vscode.workspace.openTextDocument(vscode.Uri.joinPath(vscode.Uri.file(root), ...report.split("/"))),
-    );
-  } catch {
-    /* the report is already on disk */
-  }
   trace(node.text, "result ready");
   trace("Orchestrator", `closed «${node.text}». ${usage.join(". ")}`);
   panel.refresh(`Closed «${node.text}».`);

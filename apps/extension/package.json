@@ -1,8 +1,20 @@
 {
   "name": "bigswarmai",
   "displayName": "BigSwarmAI",
-  "description": "Run an agent swarm on an objective in the open folder, using the models VS Code already has.",
-  "version": "0.1.32",
+  "description": "Multi-agent research in your folder. A swarm reads your files, shares findings as it works, and writes a cited report. Uses the models VS Code already has.",
+  "keywords": [
+    "ai",
+    "agents",
+    "multi-agent",
+    "swarm",
+    "enjambre",
+    "research",
+    "investigacion",
+    "orchestrator",
+    "findings",
+    "citations"
+  ],
+  "version": "0.1.34",
   "license": "MIT",
   "icon": "media/icon.png",
   "publisher": "SalimCastellanos",
@@ -13,7 +25,7 @@
   "engines": {
     "vscode": "^1.95.0"
   },
-  "categories": ["Other"],
+  "categories": ["AI"],
   "activationEvents": ["onStartupFinished"],
   "main": "./out/extension.js",
   "contributes": {

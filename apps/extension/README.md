@@ -1,8 +1,8 @@
 # BigSwarmAI
 
-VS Code extension that runs a swarm against an objective in the folder you have open. The orchestrator assigns the work. Agents share a discovery only when it would change what another agent does. The log, the discoveries, and the result stay in that folder.
+Multi-agent research inside the folder you have open. An orchestrator splits the objective. Agents read your files, share a finding while they work, and leave a cited report. No extra API key: it uses the chat models VS Code already has.
 
-It does not ask for an API key. It uses the chat models VS Code already has.
+Investigación con varios agentes en la carpeta abierta. Un orquestador reparte el objetivo. Los agentes leen tus archivos, comparten un hallazgo mientras trabajan y dejan un informe con fuentes. Sin otra clave: usa los modelos que VS Code ya tiene.
 
 ## Requirements
 

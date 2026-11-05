@@ -2,7 +2,7 @@
 
 [English](./README.md) | **Español**
 
-Extensión de VS Code que corre un enjambre contra un objetivo en la carpeta que tienes abierta. Un orquestador reparte el trabajo. Los agentes comparten solo un descubrimiento que cambiaría lo que haría otro agente. La bitácora, los descubrimientos y el resultado final se quedan en esa carpeta.
+Extensión de VS Code para investigar con varios agentes en la carpeta que tienes abierta. Un orquestador reparte el trabajo. Los agentes leen tus archivos, comparten un hallazgo mientras trabajan y dejan un informe con fuentes.
 
 La extensión no pide una clave. Usa los modelos que ya conectaste en VS Code.
 

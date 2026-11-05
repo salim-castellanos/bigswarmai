@@ -2,7 +2,7 @@
 
 **English** | [Español](./README.es.md)
 
-VS Code extension that runs a swarm against an objective in the folder you have open. An orchestrator assigns the work. Agents share only a discovery that would change what another agent does. The log, the discoveries, and the final result stay in that folder.
+VS Code extension for multi-agent research in the folder you have open. An orchestrator assigns the work. Agents read your files, share a finding while they work, and leave a cited report.
 
 The extension does not ask for an API key. It uses the models you already connected in VS Code.
 

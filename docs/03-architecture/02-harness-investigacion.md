@@ -80,7 +80,7 @@ Entrada: `{ "url": "https://ejemplo.org/pagina" }`.
 
 ## Controles de la corrida
 
-No cambian las herramientas ni el número de versión. Al terminar, el plugin escribe un Markdown nuevo en `research/` y lo abre. No pisa un informe anterior. Junto a Start, **Calls** es el tope de llamadas al modelo; al pasarlo, la corrida para y lo que ya se guardó se queda. Si la carpeta no tiene objetivos, **Explain this folder** crea uno que lee los archivos y cita la ruta. Si el modelo ya está conectado, lo arranca.
+No cambian las herramientas ni el número de versión. Al terminar, el plugin escribe un Markdown nuevo en `research/` y no lo abre: la bitácora sigue al frente. No pisa un informe anterior. Junto a Start, **Calls** es el tope de llamadas al modelo; al pasarlo, la corrida para y lo que ya se guardó se queda. Si la carpeta no tiene objetivos, **Explain this folder** crea uno que lee los archivos y cita la ruta. Si el modelo ya está conectado, lo arranca.
 
 ## Qué no entra en este harness
 
